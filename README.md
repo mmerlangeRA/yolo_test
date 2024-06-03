@@ -9,6 +9,8 @@ epochs=100 \
 imgsz=640
 
 ## Ressources
+https://pytorch.org/get-started/locally/
+https://medium.com/@kajhanan.1999/setting-up-pytorch-with-cuda-on-windows-11-for-gpu-deeplearning-2023-december-de1da94ddb9e
 https://blog.roboflow.com/how-to-train-yolov8-on-a-custom-dataset/
 
 
