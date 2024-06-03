@@ -1,12 +1,18 @@
 # yolo_test
 
+## Install
+
+python 3.11
+
+tested with conda install on windows, thanks to Ressources
+
 ## Train
-yolo task=detect \
-mode=train \
-model=yolov8s.pt \
-data={dataset.location}/data.yaml \
-epochs=100 \
-imgsz=640
+python train.py (check folder and training data)
+
+## Test
+python full_test.py
+
+or streamlit run app.py
 
 ## Ressources
 https://pytorch.org/get-started/locally/
@@ -14,12 +20,8 @@ https://medium.com/@kajhanan.1999/setting-up-pytorch-with-cuda-on-windows-11-for
 https://blog.roboflow.com/how-to-train-yolov8-on-a-custom-dataset/
 
 
-## Pose estimation
+## To do
 
-DenseIM ?
-PoseCNN
+Add stereo for distance estimation
 
-FS6D:https://github.com/ethnhe/FS6D-PyTorch
-
-https://github.com/liuyuan-pal/Gen6D
-https://github.com/zju3dv/OnePose
+Add homography estimation
