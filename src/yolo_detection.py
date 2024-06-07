@@ -5,7 +5,7 @@ import os
 
 root_folder = os.getcwd()
 model_folder = os.path.join(root_folder,"models")
-model_path = os.path.join(model_folder,"best_refined.onnx")
+model_path = os.path.join(model_folder,"best_recalculated.onnx")
 
 model = YOLO(model_path)
 

@@ -46,7 +46,7 @@ def setup_references(folder_path:str,save_name = "reference_data.pk"):
     print("setup_references")
     save_path = os.path.join(folder_path,save_name)
     if os.path.exists(save_path):
-        print(f'Lodaing pickle from {save_path}')
+        print(f'Loading pickle from {save_path}')
         with open(save_path, 'rb') as f:
             reference_features, reference_image_paths = pickle.load(f)
     else:
@@ -63,8 +63,7 @@ def setup_references(folder_path:str,save_name = "reference_data.pk"):
             pickle.dump((reference_features, reference_image_paths), f)
     return reference_features, reference_image_paths
 
-def find_matching(query_image_path, verbose=False):
-    global reference_features, reference_image_paths
+def find_matching(query_image_path, reference_features,reference_image_paths, verbose=False):
     global model
     print(f'query_image_path is {query_image_path}')
     # Extract features for the query image
@@ -88,4 +87,4 @@ def find_matching(query_image_path, verbose=False):
     return best_match_idx
 
 
-#find_matching("query3.jpg")
+#find_matching("query3.jpg",reference_features,reference_image_paths)
