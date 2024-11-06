@@ -1,21 +1,20 @@
 import concurrent.futures
+from dataclasses import dataclass
+import gc
 import cv2
+from tqdm import tqdm
 from ultralytics import YOLO
 import os
 import time
 import torch
 from typing import List, Tuple
 
-
+@dataclass
 class ImageExtract:
     offset_x: int
     offset_y: int
     data: cv2.typing.MatLike
 
-    def __init__(self, offset_x: int, offset_y: int, data: cv2.typing.MatLike) -> None:
-        self.offset_x = offset_x
-        self.offset_y = offset_y
-        self.data = data
 
 
 def warm_up(model, device, img):
@@ -29,6 +28,7 @@ def pixelate_region(
 ) -> None:
     """
     Apply pixelation to a rectangular region in an image.
+    Image is modified in-place.
 
     Parameters:
         image (numpy.ndarray): The input image.
@@ -36,8 +36,6 @@ def pixelate_region(
         x2, y2 (int): Bottom-right coordinates of the rectangle.
         pixelation_level (int): Level of pixelation (higher value means more pixelated).
 
-    Returns:
-        numpy.ndarray: The image with the pixelated region.
     """
     # Ensure coordinates are within the image boundaries
     x1 = max(0, min(x1, image.shape[1]))
@@ -68,7 +66,6 @@ def pixelate_region(
     # Replace the ROI in the original image
     image[y1:y2, x1:x2] = pixelated_roi
     return
-    return image
 
 
 def split_image_in_squares(image: cv2.typing.MatLike) -> List[ImageExtract]:
@@ -84,11 +81,6 @@ def split_image_in_squares(image: cv2.typing.MatLike) -> List[ImageExtract]:
             quarter_width * 2, h // 3, center[:, quarter_width * 2 : quarter_width * 3]
         ),
         ImageExtract(quarter_width * 3, h // 3, center[:, quarter_width * 3 : w]),
-        # ]
-        # center[:, 0:quarter_width],
-        # center[:, quarter_width:quarter_width*2],
-        # center[:, quarter_width*2 :quarter_width*3],
-        # center[:, quarter_width*3:w]
     ]
     return squares
 
@@ -113,7 +105,7 @@ def save_image(args) -> None:
 
 
 def load_images(image_paths: List[str]) -> Tuple[List[cv2.typing.MatLike], List[str]]:
-    images = []
+    loaded_images = []
     failed_images = []
     with concurrent.futures.ThreadPoolExecutor() as executor:
         # Submit image loading tasks
@@ -127,13 +119,13 @@ def load_images(image_paths: List[str]) -> Tuple[List[cv2.typing.MatLike], List[
             try:
                 img_path, img = future.result()
                 if img is not None:
-                    images.append(img)
+                    loaded_images.append(img)
                 else:
                     failed_images.append(img_path)
             except Exception as e:
                 print(f"Exception occurred while loading {image_path}: {e}")
                 failed_images.append(image_path)
-        return images, failed_images
+        return loaded_images, failed_images
 
 
 def save_images(images, output_paths) -> List[str]:
@@ -153,14 +145,15 @@ def save_images(images, output_paths) -> List[str]:
 
 
 def anonymize_images_array(
-    prod_images: List[cv2.typing.MatLike], pixelation_level=15, debug=False
+    images_to_anonymize: List[cv2.typing.MatLike], model,
+    device,pixelation_level=15, debug=False
 ) -> List[cv2.typing.MatLike]:
     """
     Anonymize a list of images by detecting objects and pixelating the detected regions.
-    Images are modified "in place", meaning prod_images are modified and returned.
+    Images are modified "in place", meaning images_to_anonymize are modified and returned.
 
     Parameters:
-        prod_images (List[cv2.typing.MatLike]): List of input images.
+        images_to_anonymize (List[cv2.typing.MatLike]): List of input images.
 
     Returns:
         List[cv2.typing.MatLike]: List of anonymized images.
@@ -172,7 +165,7 @@ def anonymize_images_array(
     margin = 10  # let's grow the boxes a bit
 
     # Split each image into squares and collect them
-    for idx, prod_image in enumerate(prod_images):
+    for idx, prod_image in enumerate(images_to_anonymize):
 
         # Split the image into four squares
         extracts = split_image_in_squares(prod_image)
@@ -187,7 +180,9 @@ def anonymize_images_array(
     results = model.predict(
         all_splitted_images, device=device, conf=0.1, half=True, verbose=debug
     )
-    all_splitted_images = None
+
+    del all_splitted_images
+    gc.collect()
 
     # Synchronize GPU
     if device == "cuda":
@@ -195,8 +190,8 @@ def anonymize_images_array(
 
     end_time_predict = time.time()
 
-    for image_index in range(len(prod_images)):
-        prod_image = prod_images[image_index]
+    for image_index in range(len(images_to_anonymize)):
+        prod_image = images_to_anonymize[image_index]
         h, w = prod_image.shape[:2]
         square_index = 0
         for extract_index in range(
@@ -241,7 +236,7 @@ def anonymize_images_array(
         print(f"Total time: {end_time - start_time} seconds")
 
     # Return the list of anonymized images
-    return prod_images
+    return images_to_anonymize
 
 
 # path model
@@ -294,7 +289,7 @@ image_paths_batches = [
     for i in range(0, len(image_global_paths), batch_size)
 ]
 
-for batch in image_paths_batches:
+for batch in tqdm(image_paths_batches, desc="Processing Batches"):
     image_to_process_paths = batch
     images, failed_images_paths = load_images(image_to_process_paths)
     if len(failed_images_paths) > 0:
@@ -307,7 +302,8 @@ for batch in image_paths_batches:
         for failed_image_path in failed_images_paths:
             image_to_process_paths.remove(failed_image_path)
     try:
-        anonymize_images_array(images, pixelation_level=pixelation_level, debug=False)
+        anonymize_images_array(images, model,
+    device,pixelation_level=pixelation_level, debug=False)
     except Exception as e:
         print(f"Error anonymizing images: {e}")
         failed_images_processing_paths.extend(image_to_process_paths)
@@ -332,6 +328,8 @@ for batch in image_paths_batches:
         break
 
 end_time = time.time()
+
+# Results and conclusions
 if len(failed_images_processing_paths) > 0:
     print(
         f"Failed to process {len(failed_images_processing_paths)} images: {failed_images_processing_paths}"
