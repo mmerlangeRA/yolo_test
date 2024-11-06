@@ -1,15 +1,14 @@
+from multiprocessing import Pool
+import concurrent.futures
 import cv2
 import numpy as np
 from ultralytics import YOLO
 import os
 import time
 import torch
+from PIL import Image
+from typing import List
 
-#add batch processing
-'''
-image_files = [test_image1, test_image2, test_image3]
-images = [cv2.imread(img_file) for img_file in image_files]
-'''
 # Check if CUDA is available
 print("CUDA available:", torch.cuda.is_available())
 
@@ -20,10 +19,6 @@ def warm_up(model, device, img):
     # Warm-up (optional but recommended)
     for _ in range(5):
         _ = model.predict(img, device=device)
-
-#test_image = r'C:\Users\mmerl\projects\yolo_test\test1.jpg'
-import cv2
-import numpy as np
 
 def pixelate_region(image, x1, y1, x2, y2, pixelation_level=10):
     """
@@ -66,9 +61,8 @@ def pixelate_region(image, x1, y1, x2, y2, pixelation_level=10):
 
     # Replace the ROI in the original image
     image[y1:y2, x1:x2] = pixelated_roi
-
+    return
     return image
-
 
 def split_image_in_4(image):
     h, w, _ = image.shape
@@ -82,68 +76,215 @@ def split_image_in_4(image):
     ]
     return quadrants
 
+def save_image(args):
+    output_path, image = args
+    cv2.imwrite(output_path, image)
+
 # Load the model
 path_to_model = r"C:\Users\mmerl\projects\yolo_test\floutage.pt"
-model = YOLO(path_to_model)
+model = YOLO(path_to_model,verbose=False)
 # Move the model to the desired device
 model.to(device)
-
 # Verify the device the model is on
 print("Model device:", next(model.model.parameters()).device)
 
-test_image = r"C:\Users\mmerl\projects\stereo_cam\data\Photos\P5\D_P5_CAM_G_2_CUBE.png" 
-
+test_image_path = r"C:\Users\mmerl\projects\stereo_cam\data\Photos\P5\D_P5_CAM_G_2_CUBE.png" 
+output_file_path = r'C:\Users\mmerl\projects\yolo_test\result_test_cv2.png'
 #warm up
-warm_up(model, device, cv2.imread(test_image))
+warm_up(model, device, cv2.imread(test_image_path))
 
+def anonymize_image(prod_image:cv2.typing.MatLike, debug=False)->cv2.typing.MatLike:
+    start_time = time.time()
+
+    h, w, _ = prod_image.shape
+    tier_height = h//3
+    quarter_width = w // 4
+    splitted_images= split_image_in_4(prod_image)
+    end_time_split = time.time()
+
+    # Make predictions and specify the device
+    results = model.predict(splitted_images, device=device,conf=0.1,half=True, verbose=debug)#half=True
+
+    # Synchronize GPU
+    if device == 'cuda':
+        torch.cuda.synchronize()
+
+    end_time_predict = time.time()
+
+    #print("Model parameters are on device:", next(model.model.parameters()).device)
+    # Process the results and apply blurring to detected boxes
+    index=0
+    for result in results:
+        boxes = result.boxes  # Boxes object for bounding box outputs
+        for box in boxes:
+            x1, y1, x2, y2 = box.xyxy[0].tolist()
+            x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+            # Ensure the coordinates are within image boundaries
+            x1 = max(0, x1)
+            y1 = max(0, y1)
+            x2 = min(prod_image.shape[1], x2)
+            y2 = min(prod_image.shape[0], y2)
+            x1+=quarter_width*index
+            x2+=quarter_width*index
+            y1+=tier_height
+            y2+=tier_height
+
+            pixelate_region(prod_image, x1, y1, x2, y2, pixelation_level=15)
+            if debug:
+                print(f"nb boxes :{len(boxes)}")
+                print("box",x1, y1, x2, y2)
+                cv2.rectangle(prod_image, (x1, y1), (x2, y2), (0, 255, 0), 20)
+        index+=1
+    
+    end_time = time.time()
+    if debug:
+        print(f"Image splitting time: {end_time_split - start_time} seconds")
+        print(f"Prediction execution time: {end_time_predict - end_time_split} seconds")
+        print(f"Processing and save execution time: {end_time - end_time_predict} seconds")
+        print(f"Total time: {end_time - start_time} seconds")
+    return 
+
+
+def anonymize_images_array(prod_images: List[cv2.typing.MatLike], debug=False) -> List[cv2.typing.MatLike]:
+    """
+    Anonymize a list of images by detecting objects and pixelating the detected regions.
+
+    Parameters:
+        prod_images (List[cv2.typing.MatLike]): List of input images.
+
+    Returns:
+        List[cv2.typing.MatLike]: List of anonymized images.
+    """
+    start_time = time.time()
+    all_splitted_images = []
+    image_info_list = []
+
+    # Split each image into quadrants and collect them
+    for idx, prod_image in enumerate(prod_images):
+        h, w, _ = prod_image.shape
+        tier_height = h // 3
+        quarter_width = w // 4
+
+        # Split the image into four quadrants
+        splitted_images = split_image_in_4(prod_image)
+        all_splitted_images.extend(splitted_images)
+
+        # Store information to map predictions back to the original images
+        for quadrant_index in range(4):
+            image_info_list.append({
+                'prod_image': prod_image,
+                'quarter_width': quarter_width,
+                'tier_height': tier_height,
+                'quadrant_index': quadrant_index,
+                'image_index': idx
+            })
+
+    end_time_split = time.time()
+
+    # Make predictions on all quadrants at once
+    results = model.predict(all_splitted_images, device=device, conf=0.1, half=True,verbose=debug)
+
+    # Synchronize GPU
+    if device == 'cuda':
+        torch.cuda.synchronize()
+
+    end_time_predict = time.time()
+
+    # Process the results and apply pixelation to detected boxes
+    for result, image_info in zip(results, image_info_list):
+        prod_image = image_info['prod_image']
+        quarter_width = image_info['quarter_width']
+        tier_height = image_info['tier_height']
+        quadrant_index = image_info['quadrant_index']
+        image_index = image_info['image_index']
+
+        boxes = result.boxes
+        if debug:
+            print(f"Image {image_index}, Quadrant {quadrant_index}, nb boxes: {len(boxes)}")
+        for box in boxes:
+            x1, y1, x2, y2 = box.xyxy[0].tolist()
+            x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+
+            # Adjust coordinates to match the original image
+            x1 += quarter_width * quadrant_index
+            x2 += quarter_width * quadrant_index
+            y1 += tier_height
+            y2 += tier_height
+
+            # Ensure the coordinates are within image boundaries
+            x1 = max(0, x1)
+            y1 = max(0, y1)
+            x2 = min(prod_image.shape[1], x2)
+            y2 = min(prod_image.shape[0], y2)
+
+            # Apply pixelation to the detected region
+            pixelate_region(prod_image, x1, y1, x2, y2, pixelation_level=15)
+
+    end_time = time.time()
+    if debug:
+        print(f"Image splitting time: {end_time_split - start_time} seconds")
+        print(f"Prediction execution time: {end_time_predict - end_time_split} seconds")
+        print(f"Processing time: {end_time - end_time_predict} seconds")
+        print(f"Total time: {end_time - start_time} seconds")
+
+    # Return the list of anonymized images
+    return prod_images
+
+start1 = time.time()
+test1=Image.open(test_image_path)
+end1 = time.time()
+prod_image =cv2.imread(test_image_path)
+end2 = time.time()
+print(f"Loading time PIL: {end1 - start1} seconds")
+print(f"Loading time cv2: {end2 - end1} seconds")
 start_time = time.time()
-prod_image=cv2.imread(test_image)
-h, w, _ = prod_image.shape
-tier_height = h//3
-quarter_width = w // 4
-splitted_images= split_image_in_4(prod_image)
-end_time_load = time.time()
-
-start_time_predict = time.time()
-
-# Make predictions and specify the device
-results = model.predict(splitted_images, device=device,conf=0.1)#half=True
-
-# Synchronize GPU
-if device == 'cuda':
-    torch.cuda.synchronize()
-
-end_time_predict = time.time()
-
-output_file_path = r'C:\Users\mmerl\projects\yolo_test\result_test3.jpg'
-#print("Model parameters are on device:", next(model.model.parameters()).device)
-
-# Process the results and apply blurring to detected boxes
-index=0
-for result in results:
-    boxes = result.boxes  # Boxes object for bounding box outputs
-    for box in boxes:
-        x1, y1, x2, y2 = box.xyxy[0].tolist()
-        x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
-        # Ensure the coordinates are within image boundaries
-        x1 = max(0, x1)
-        y1 = max(0, y1)
-        x2 = min(prod_image.shape[1], x2)
-        y2 = min(prod_image.shape[0], y2)
-        x1+=quarter_width*index
-        x2+=quarter_width*index
-        y1+=tier_height
-        y2+=tier_height
-
-        prod_image = pixelate_region(prod_image, x1, y1, x2, y2, pixelation_level=15)
-        #print(x1, y1, x2, y2)
-        #cv2.rectangle(prod_image, (x1, y1), (x2, y2), (0, 255, 0), 20)
-    index+=1
-
+anonymize_image(prod_image)
+output_dir = r'C:\Users\mmerl\projects\yolo_test\output'
+output_file_path = os.path.join(output_dir, f"anonymized_{os.path.basename(test_image_path)}")
 cv2.imwrite(output_file_path, prod_image)
 end_time = time.time()
+print(f"Total execution time: {end_time - start_time} seconds")
 
-print(f"Loading time: {end_time_load - start_time} seconds")
-print(f"Prediction execution time: {end_time_predict - start_time_predict} seconds")
-print(f"Processing and save execution time: {end_time - end_time_predict} seconds")
-print(f"Total time: {end_time - start_time} seconds")
+start_time = time.time()
+image_directory = r'C:\Users\mmerl\projects\yolo_test\data\logiroad'
+# get paths of all files in folder data/logiroad
+image_local_paths = os.listdir(image_directory)
+image_global_paths = [os.path.join(image_directory, image_path) for image_path in image_local_paths]
+
+#let's process image_paths by batch of 4 images
+batch_size = 4
+image_paths_batches = [image_global_paths[i:i + batch_size] for i in range(0, len(image_global_paths), batch_size)]
+
+for batch in image_paths_batches:
+    image_paths = batch
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        images = list(executor.map(cv2.imread, image_paths))
+
+    anonymize_images_array(images)
+
+    # Prepare output file paths
+    output_file_paths = [
+        os.path.join(output_dir, f"anonymized_{os.path.basename(image_path)}")
+        for image_path in image_paths
+    ]
+
+
+    # Prepare the arguments for saving images
+    save_args = zip(output_file_paths, images)
+
+    # Save images in parallel using futures
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        executor.map(save_image, save_args)
+
+
+end_time = time.time()
+print(f"Total execution time: {end_time - start_time} seconds")
+print(f"Average execution time: {(end_time - start_time)/len(image_global_paths)} seconds")
+
+""" if __name__ == '__main__':
+    start_time = time.time()
+    image_paths = [test_image_path,test_image_path,test_image_path]  # List of image paths
+    with Pool(processes=4) as pool:  # Adjust the number of processes as needed
+        pool.map(anonymize_image, image_paths)
+    end_time = time.time()
+    print(f"Total execution time: {end_time - start_time} seconds") """
