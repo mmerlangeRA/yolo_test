@@ -80,8 +80,13 @@ def save_image(args):
     output_path, image = args
     cv2.imwrite(output_path, image)
 
-# Load the model
+
 path_to_model = r"C:\Users\mmerl\projects\yolo_test\floutage.pt"
+image_directory = r'C:\Users\mmerl\projects\yolo_test\data\logiroad'
+output_dir = r'C:\Users\mmerl\projects\yolo_test\output'
+batch_size = 16
+
+# Load the model
 model = YOLO(path_to_model,verbose=False)
 # Move the model to the desired device
 model.to(device)
@@ -230,29 +235,37 @@ def anonymize_images_array(prod_images: List[cv2.typing.MatLike], debug=False) -
     # Return the list of anonymized images
     return prod_images
 
-start1 = time.time()
-test1=Image.open(test_image_path)
-end1 = time.time()
-prod_image =cv2.imread(test_image_path)
-end2 = time.time()
-print(f"Loading time PIL: {end1 - start1} seconds")
-print(f"Loading time cv2: {end2 - end1} seconds")
-start_time = time.time()
-anonymize_image(prod_image)
-output_dir = r'C:\Users\mmerl\projects\yolo_test\output'
-output_file_path = os.path.join(output_dir, f"anonymized_{os.path.basename(test_image_path)}")
-cv2.imwrite(output_file_path, prod_image)
-end_time = time.time()
-print(f"Total execution time: {end_time - start_time} seconds")
-
-start_time = time.time()
-image_directory = r'C:\Users\mmerl\projects\yolo_test\data\logiroad'
 # get paths of all files in folder data/logiroad
 image_local_paths = os.listdir(image_directory)
 image_global_paths = [os.path.join(image_directory, image_path) for image_path in image_local_paths]
 
+
+# test performance on 1 image
+test_image_path = image_global_paths[0]
+output_file_path = os.path.join(output_dir, f"anonymized_{os.path.basename(test_image_path)}")
+
+print(f"Test loading time with cv2 and PIL")
+start1 = time.time()
+test_PIL=Image.open(test_image_path)
+print(test_PIL.size)
+end1 = time.time()
+test_cv2 =cv2.imread(test_image_path)
+print(test_cv2.shape)
+end2 = time.time()
+print(f"Loading time PIL: {end1 - start1} seconds")
+print(f"Loading time cv2: {end2 - end1} seconds")
+
+print(f"Processing 1 single image: {test_image_path}")
+start_time = time.time()
+test_cv2 =cv2.imread(test_image_path)
+anonymize_image(test_cv2)
+cv2.imwrite(output_file_path, test_cv2)
+end_time = time.time()
+print(f"Total execution time: {end_time - start_time} seconds")
+
+print(f"Processing all images ({len(image_global_paths)}) by batch of size: {batch_size}")
+start_time = time.time()
 #let's process image_paths by batch of 4 images
-batch_size = 4
 image_paths_batches = [image_global_paths[i:i + batch_size] for i in range(0, len(image_global_paths), batch_size)]
 
 for batch in image_paths_batches:
@@ -268,7 +281,6 @@ for batch in image_paths_batches:
         for image_path in image_paths
     ]
 
-
     # Prepare the arguments for saving images
     save_args = zip(output_file_paths, images)
 
@@ -280,11 +292,3 @@ for batch in image_paths_batches:
 end_time = time.time()
 print(f"Total execution time: {end_time - start_time} seconds")
 print(f"Average execution time: {(end_time - start_time)/len(image_global_paths)} seconds")
-
-""" if __name__ == '__main__':
-    start_time = time.time()
-    image_paths = [test_image_path,test_image_path,test_image_path]  # List of image paths
-    with Pool(processes=4) as pool:  # Adjust the number of processes as needed
-        pool.map(anonymize_image, image_paths)
-    end_time = time.time()
-    print(f"Total execution time: {end_time - start_time} seconds") """
